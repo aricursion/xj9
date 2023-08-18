@@ -1,0 +1,13 @@
+[package]
+name = "pdf_rust"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+egui = "0.22.0"
+egui-winit = "0.22.0"
+mupdf = "0.4.2"
+pollster = "0.3.0"
+wgpu = "0.17.0"
