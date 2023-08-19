@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+cargo-wgsl = "0.0.14"
 egui = "0.22.0"
 egui-winit = "0.22.0"
 mupdf = "0.4.2"
