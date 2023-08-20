@@ -1,11 +1,80 @@
+use core::num;
+
 use egui_winit::winit;
 use egui_winit::winit::{
     event::*,
     event_loop::EventLoop,
     window::{Window, WindowBuilder},
 };
+use wgpu::util::DeviceExt;
+
 use mupdf::document::Document;
 use mupdf::{self, Point};
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 3],
+    color: [f32; 3],
+}
+const TRIANGLE: &[Vertex] = &[
+    Vertex {
+        position: [0.0, 0.5, 0.0],
+        color: [1.0, 0.0, 0.0],
+    },
+    Vertex {
+        position: [-0.5, -0.5, 0.0],
+        color: [0.0, 1.0, 0.0],
+    },
+    Vertex {
+        position: [0.5, -0.5, 0.0],
+        color: [0.0, 0.0, 1.0],
+    },
+];
+
+const TRIANGLE_INDICES: &[u16] = &[0, 1, 2];
+
+const SQUARE: &[Vertex] = &[
+    Vertex {
+        position: [-0.5, 0.5, 0.0],
+        color: [1.0, 0.0, 0.0],
+    },
+    Vertex {
+        position: [-0.5, -0.5, 0.0],
+        color: [0.0, 0.0, 1.0],
+    },
+    Vertex {
+        position: [0.5, -0.5, 0.0],
+        color: [0.0, 1.0, 0.0],
+    },
+    Vertex {
+        position: [0.5, 0.5, 0.0],
+        color: [0.0, 1.0, 1.0],
+    },
+];
+
+const SQUARE_INDICES: &[u16] = &[0, 1, 3, 1, 2, 3];
+
+impl Vertex {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+            ],
+        }
+    }
+}
 
 struct State {
     //graphics data
@@ -16,6 +85,14 @@ struct State {
     size: winit::dpi::PhysicalSize<u32>,
     window: Window,
     render_pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    num_indices: u32,
+
+    vertex_buffer2: wgpu::Buffer,
+    index_buffer2: wgpu::Buffer,
+    num_indices2: u32,
+
     //interal data
     doc: mupdf::Document,
     toc: bool,
@@ -105,24 +182,22 @@ impl State {
             layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main", // 1.
-                buffers: &[],           // 2.
+                entry_point: "vs_main",
+                buffers: &[Vertex::desc()],
             },
             fragment: Some(wgpu::FragmentState {
-                // 3.
                 module: &shader,
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
-                    // 4.
                     format: config.format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList, // 1.
+                topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw, // 2.
+                front_face: wgpu::FrontFace::Ccw,
                 cull_mode: Some(wgpu::Face::Back),
                 // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
                 polygon_mode: wgpu::PolygonMode::Fill,
@@ -131,14 +206,38 @@ impl State {
                 // Requires Features::CONSERVATIVE_RASTERIZATION
                 conservative: false,
             },
-            depth_stencil: None, // 1.
+            depth_stencil: None,
             multisample: wgpu::MultisampleState {
-                count: 1,                         // 2.
-                mask: !0,                         // 3.
-                alpha_to_coverage_enabled: false, // 4.
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
             },
-            multiview: None, // 5.
+            multiview: None,
         });
+
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(SQUARE),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(SQUARE_INDICES),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let num_indices = SQUARE_INDICES.len() as u32;
+
+        let vertex_buffer2 = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(TRIANGLE),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer2 = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(TRIANGLE_INDICES),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        let num_indices2 = TRIANGLE_INDICES.len() as u32;
 
         Self {
             //graphics data
@@ -149,6 +248,13 @@ impl State {
             config,
             size,
             render_pipeline,
+            vertex_buffer,
+            index_buffer,
+            num_indices,
+            vertex_buffer2,
+            index_buffer2,
+            num_indices2,
+
             //internal data
             doc,
             toc: false,
@@ -221,8 +327,23 @@ impl State {
                 depth_stencil_attachment: None,
             });
 
-            render_pass.set_pipeline(&self.render_pipeline); // 2.
-            render_pass.draw(0..3, 0..1); // 3.
+            let buf;
+            let idxbuf;
+            let numidx;
+            if (self.toc) {
+                buf = &self.vertex_buffer;
+                idxbuf = &self.index_buffer;
+                numidx = self.num_indices;
+            } else {
+                buf = &self.vertex_buffer2;
+                idxbuf = &self.index_buffer2;
+                numidx = self.num_indices2;
+            }
+
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_vertex_buffer(0, buf.slice(..));
+            render_pass.set_index_buffer(idxbuf.slice(..), wgpu::IndexFormat::Uint16); // 1.
+            render_pass.draw_indexed(0..numidx, 0, 0..1);
         }
 
         // submit will accept anything that implements IntoIter
@@ -258,6 +379,7 @@ pub async fn run() {
         .doc
         .convert_to_pdf(0, state.doc.page_count().unwrap(), 0)
         .unwrap();
+
     let page0 = pdf_doc.load_page(0).unwrap();
 
     event_loop.run(move |event, _, control_flow| {
@@ -281,13 +403,18 @@ pub async fn run() {
                     input:
                         KeyboardInput {
                             state: ElementState::Pressed,
-                            virtual_keycode: Some(VirtualKeyCode::Escape),
+                            // virtual_keycode: Some(VirtualKeyCode::Escape),
+                            virtual_keycode: kc,
                             ..
                         },
                     ..
-                } => {
-                    control_flow.set_exit();
-                }
+                } => match kc {
+                    Some(VirtualKeyCode::Escape) => {
+                        control_flow.set_exit();
+                    }
+                    Some(VirtualKeyCode::Space) => state.toc ^= true,
+                    _ => {}
+                },
                 _ => {}
             },
             Event::MainEventsCleared => {
@@ -315,7 +442,8 @@ pub async fn run() {
                         control_flow.set_exit();
                     }
                     Err(e) => {
-                        eprint!("{:?}", e)
+                        eprint!("{:?}", e);
+                        control_flow.set_exit();
                     }
                 };
             }
