@@ -9,47 +9,31 @@ use egui_winit::winit::{
 use wgpu::util::DeviceExt;
 
 use mupdf::document::Document;
-use mupdf::{self, Point};
+use mupdf::{self, Matrix, Point};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32; 3],
-    color: [f32; 3],
+    tex_coords: [f32; 2],
 }
-const TRIANGLE: &[Vertex] = &[
-    Vertex {
-        position: [0.0, 0.5, 0.0],
-        color: [1.0, 0.0, 0.0],
-    },
-    Vertex {
-        position: [-0.5, -0.5, 0.0],
-        color: [0.0, 1.0, 0.0],
-    },
-    Vertex {
-        position: [0.5, -0.5, 0.0],
-        color: [0.0, 0.0, 1.0],
-    },
-];
-
-const TRIANGLE_INDICES: &[u16] = &[0, 1, 2];
 
 const SQUARE: &[Vertex] = &[
     Vertex {
-        position: [-0.5, 0.5, 0.0],
-        color: [1.0, 0.0, 0.0],
+        position: [-1.0, 1.0, 0.0],
+        tex_coords: [0.0, 0.0],
     },
     Vertex {
-        position: [-0.5, -0.5, 0.0],
-        color: [0.0, 0.0, 1.0],
+        position: [-1.0, -1.0, 0.0],
+        tex_coords: [0.0, 1.0],
     },
     Vertex {
-        position: [0.5, -0.5, 0.0],
-        color: [0.0, 1.0, 0.0],
+        position: [1.0, -1.0, 0.0],
+        tex_coords: [1.0, 1.0],
     },
     Vertex {
-        position: [0.5, 0.5, 0.0],
-        color: [0.0, 1.0, 1.0],
+        position: [1.0, 1.0, 0.0],
+        tex_coords: [1.0, 0.0],
     },
 ];
 
@@ -69,7 +53,7 @@ impl Vertex {
                 wgpu::VertexAttribute {
                     offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3,
+                    format: wgpu::VertexFormat::Float32x2,
                 },
             ],
         }
@@ -88,11 +72,7 @@ struct State {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     num_indices: u32,
-
-    vertex_buffer2: wgpu::Buffer,
-    index_buffer2: wgpu::Buffer,
-    num_indices2: u32,
-
+    diffuse_bind_group: wgpu::BindGroup, // NEW!
     //interal data
     doc: mupdf::Document,
     toc: bool,
@@ -168,12 +148,122 @@ impl State {
         };
         surface.configure(&device, &config);
 
+
+        let page0 = doc.load_page(0).unwrap();
+        let pixmap0 = page0.to_pixmap(
+            &Matrix::IDENTITY,
+            &mupdf::Colorspace::device_rgb(),
+            1.0,
+            false,
+        ).unwrap();
+        let pixels : &[u8] = bytemuck::cast_slice(pixmap0.pixels().unwrap());
+        let diffuse_rgba = pixels;
+
+        let texture_size = wgpu::Extent3d {
+            width: pixmap0.width(),
+            height: pixmap0.height(),
+            depth_or_array_layers: 1,
+        };
+        let diffuse_texture = device.create_texture(&wgpu::TextureDescriptor {
+            // All textures are stored as 3D, we represent our 2D texture
+            // by setting depth to 1.
+            size: texture_size,
+            mip_level_count: 1, // We'll talk about this a little later
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            // Most images are stored using sRGB so we need to reflect that here.
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
+            // COPY_DST means that we want to copy data to this texture
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            label: Some("diffuse_texture"),
+            // This is the same as with the SurfaceConfig. It
+            // specifies what texture formats can be used to
+            // create TextureViews for this texture. The base
+            // texture format (Rgba8UnormSrgb in this case) is
+            // always supported. Note that using a different
+            // texture format is not supported on the WebGL2
+            // backend.
+            view_formats: &[],
+        });
+
+        queue.write_texture(
+            // Tells wgpu where to copy the pixel data
+            wgpu::ImageCopyTexture {
+                texture: &diffuse_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            // The actual pixel data
+            &diffuse_rgba,
+            // The layout of the texture
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * pixmap0.width()),
+                rows_per_image: Some(pixmap0.height()),
+            },
+            texture_size,
+        );
+
+        let diffuse_texture_view =
+            diffuse_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let diffuse_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        // This should match the filterable field of the
+                        // corresponding Texture entry above.
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+                label: Some("texture_bind_group_layout"),
+            });
+
+        let diffuse_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&diffuse_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&diffuse_sampler),
+                },
+            ],
+            label: Some("diffuse_bind_group"),
+        });
+
         let shader = device.create_shader_module(wgpu::include_wgsl!("./shader.wgsl"));
 
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[&texture_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -227,18 +317,6 @@ impl State {
         });
         let num_indices = SQUARE_INDICES.len() as u32;
 
-        let vertex_buffer2 = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(TRIANGLE),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer2 = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(TRIANGLE_INDICES),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        let num_indices2 = TRIANGLE_INDICES.len() as u32;
-
         Self {
             //graphics data
             window,
@@ -251,10 +329,7 @@ impl State {
             vertex_buffer,
             index_buffer,
             num_indices,
-            vertex_buffer2,
-            index_buffer2,
-            num_indices2,
-
+            diffuse_bind_group,
             //internal data
             doc,
             toc: false,
@@ -330,19 +405,14 @@ impl State {
             let buf;
             let idxbuf;
             let numidx;
-            if (self.toc) {
-                buf = &self.vertex_buffer;
-                idxbuf = &self.index_buffer;
-                numidx = self.num_indices;
-            } else {
-                buf = &self.vertex_buffer2;
-                idxbuf = &self.index_buffer2;
-                numidx = self.num_indices2;
-            }
+            buf = &self.vertex_buffer;
+            idxbuf = &self.index_buffer;
+            numidx = self.num_indices;
 
             render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
             render_pass.set_vertex_buffer(0, buf.slice(..));
-            render_pass.set_index_buffer(idxbuf.slice(..), wgpu::IndexFormat::Uint16); // 1.
+            render_pass.set_index_buffer(idxbuf.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(0..numidx, 0, 0..1);
         }
 
