@@ -16,24 +16,29 @@ use crate::texture;
 struct Vertex {
     position: [f32; 3],
     tex_coords: [f32; 2],
+    bg_color: [f32; 3]
 }
 
 const SQUARE: &[Vertex] = &[
     Vertex {
         position: [-1.0, 1.0, 0.0],
         tex_coords: [0.0, 0.0],
+        bg_color: [255.0, 255.0, 255.0]
     },
     Vertex {
         position: [-1.0, -1.0, 0.0],
         tex_coords: [0.0, 1.0],
+        bg_color: [255.0, 255.0, 255.0]
     },
     Vertex {
         position: [1.0, -1.0, 0.0],
         tex_coords: [1.0, 1.0],
+        bg_color: [255.0, 255.0, 255.0]
     },
     Vertex {
         position: [1.0, 1.0, 0.0],
         tex_coords: [1.0, 0.0],
+        bg_color: [255.0, 255.0, 255.0]
     },
 ];
 
@@ -55,6 +60,11 @@ impl Vertex {
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32x2,
                 },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 5]>() as wgpu::BufferAddress,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
             ],
         }
     }
@@ -72,14 +82,14 @@ struct State {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     num_indices: u32,
-    diffuse_bind_group: wgpu::BindGroup, 
+    diffuse_bind_group: wgpu::BindGroup,
     diffuse_texture: texture::Texture,
     //interal data
     doc: mupdf::Document,
     toc: bool,
     page: i32,
     pos: Point,
-    scale: i32,
+    res: f32,
     color: wgpu::Color,
 }
 
@@ -149,18 +159,30 @@ impl State {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-
+        let res = 3.0;
 
         let page0 = doc.load_page(0).unwrap();
-        let pixmap0 = page0.to_pixmap(
-            &Matrix::IDENTITY,
-            &mupdf::Colorspace::device_rgb(),
-            1.0,
-            false,
-        ).unwrap();
-        let pixels : &[u8] = bytemuck::cast_slice(pixmap0.pixels().unwrap());
-        let diffuse_texture = texture::Texture::from_bytes(&device, &queue, pixels, pixmap0.width(), pixmap0.height(), "page0").unwrap(); 
-        
+        let pixmap0 = page0
+            .to_pixmap(
+                &Matrix::new_scale(res, res),
+                &mupdf::Colorspace::device_rgb(),
+                1.0,
+                false,
+            )
+            .unwrap();
+        let pixels: &[u8] = bytemuck::cast_slice(pixmap0.pixels().unwrap());
+        let mut new_pixels: Vec<u8> = pixels.iter().map(|&i| i as u8).collect();
+        let diffuse_texture = texture::Texture::from_bytes(
+            &device,
+            &queue,
+            &*(new_pixels.into_boxed_slice()),
+            pixmap0.width(),
+            pixmap0.height(),
+            "page0",
+        )
+        .unwrap();
+
+
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[
@@ -279,7 +301,7 @@ impl State {
             page: 0,
             toc: false,
             pos: Point { x: 0.0, y: 0.0 },
-            scale: 1,
+            res,
             color: wgpu::Color {
                 r: 0.0,
                 g: 0.0,
@@ -370,39 +392,53 @@ impl State {
 
     fn update_page_texture(&mut self) {
         let page = self.doc.load_page(self.page).unwrap();
-        let pixmap = page.to_pixmap(
-            &Matrix::IDENTITY,
-            &mupdf::Colorspace::device_rgb(),
-            1.0,
-            false,
-        ).unwrap();
-        let pixels : &[u8] = bytemuck::cast_slice(pixmap.pixels().unwrap());
-        let new_texture = texture::Texture::from_bytes(&self.device, &self.queue, pixels, pixmap.width(), pixmap.height(), "newpage").unwrap();
+        let mut pixmap = page
+            .to_pixmap(
+                &Matrix::new_scale(self.res, self.res),
+                &mupdf::Colorspace::device_rgb(),
+                1.0,
+                false,
+            )
+            .unwrap();
+        pixmap.set_resolution(pixmap.resolution().0 *10, pixmap.resolution().1 *10);
+        let pixels: &[u8] = bytemuck::cast_slice(pixmap.pixels().unwrap());
+        let mut new_pixels: Vec<u8> = pixels.iter().map(|&i| i as u8).collect();
+
+        let new_texture = texture::Texture::from_bytes(
+            &self.device,
+            &self.queue,
+            &*new_pixels.into_boxed_slice(),
+            pixmap.width(),
+            pixmap.height(),
+            "newpage",
+        )
+        .unwrap();
         self.diffuse_texture = new_texture;
         let texture_bind_group_layout =
-        self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    // This should match the filterable field of the
-                    // corresponding Texture entry above.
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-            label: Some("texture_bind_group_layout"),
-        });
+            self.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                multisampled: false,
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            // This should match the filterable field of the
+                            // corresponding Texture entry above.
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                    label: Some("texture_bind_group_layout"),
+                });
 
         self.diffuse_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &texture_bind_group_layout,
@@ -432,14 +468,25 @@ pub async fn run() {
         let path = std::path::Path::new(&filename);
         String::from(path.file_name().unwrap().to_str().unwrap())
     };
+
+    let doc = Document::open(filename.as_str()).unwrap();
+    let pixmap = doc
+        .load_page(0)
+        .unwrap()
+        .to_pixmap(
+            &Matrix::IDENTITY,
+            &mupdf::Colorspace::device_rgb(),
+            1.0,
+            false,
+        )
+        .unwrap();
+
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         .with_title(format!("{}", prettyname))
-        .with_inner_size(winit::dpi::LogicalSize::new(500, 500))
+        .with_inner_size(winit::dpi::PhysicalSize::new(pixmap.width(), pixmap.height()))
         .build(&event_loop)
         .unwrap();
-
-    let doc = Document::open(filename.as_str()).unwrap();
 
     let mut state = State::new(window, doc).await;
 
@@ -464,7 +511,6 @@ pub async fn run() {
                     input:
                         KeyboardInput {
                             state: ElementState::Pressed,
-                            // virtual_keycode: Some(VirtualKeyCode::Escape),
                             virtual_keycode: kc,
                             ..
                         },
