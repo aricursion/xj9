@@ -39,7 +39,3 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         p*tex[2] + (1.0 - p)*col[2],
         1.0);
 }
-
- 
-
- 

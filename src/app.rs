@@ -16,29 +16,29 @@ use crate::texture;
 struct Vertex {
     position: [f32; 3],
     tex_coords: [f32; 2],
-    bg_color: [f32; 3]
+    bg_color: [f32; 3],
 }
 
 const SQUARE: &[Vertex] = &[
     Vertex {
         position: [-1.0, 1.0, 0.0],
         tex_coords: [0.0, 0.0],
-        bg_color: [255.0, 255.0, 255.0]
+        bg_color: [255.0, 255.0, 255.0],
     },
     Vertex {
         position: [-1.0, -1.0, 0.0],
         tex_coords: [0.0, 1.0],
-        bg_color: [255.0, 255.0, 255.0]
+        bg_color: [255.0, 255.0, 255.0],
     },
     Vertex {
         position: [1.0, -1.0, 0.0],
         tex_coords: [1.0, 1.0],
-        bg_color: [255.0, 255.0, 255.0]
+        bg_color: [255.0, 255.0, 255.0],
     },
     Vertex {
         position: [1.0, 1.0, 0.0],
         tex_coords: [1.0, 0.0],
-        bg_color: [255.0, 255.0, 255.0]
+        bg_color: [255.0, 255.0, 255.0],
     },
 ];
 
@@ -140,9 +140,7 @@ impl State {
             .unwrap();
 
         let surface_caps = surface.get_capabilities(&adapter);
-        // Shader code in this tutorial assumes an sRGB surface texture. Using a different
-        // one will result all the colors coming out darker. If you want to support non
-        // sRGB surfaces, you'll need to account for that when drawing to the frame.
+
         let surface_format = surface_caps
             .formats
             .iter()
@@ -171,17 +169,15 @@ impl State {
             )
             .unwrap();
         let pixels: &[u8] = bytemuck::cast_slice(pixmap0.pixels().unwrap());
-        let mut new_pixels: Vec<u8> = pixels.iter().map(|&i| i as u8).collect();
         let diffuse_texture = texture::Texture::from_bytes(
             &device,
             &queue,
-            &*(new_pixels.into_boxed_slice()),
+            pixels,
             pixmap0.width(),
             pixmap0.height(),
             "page0",
         )
         .unwrap();
-
 
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -254,11 +250,8 @@ impl State {
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: Some(wgpu::Face::Back),
-                // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
                 polygon_mode: wgpu::PolygonMode::Fill,
-                // Requires Features::DEPTH_CLIP_CONTROL
                 unclipped_depth: false,
-                // Requires Features::CONSERVATIVE_RASTERIZATION
                 conservative: false,
             },
             depth_stencil: None,
@@ -369,12 +362,9 @@ impl State {
                 depth_stencil_attachment: None,
             });
 
-            let buf;
-            let idxbuf;
-            let numidx;
-            buf = &self.vertex_buffer;
-            idxbuf = &self.index_buffer;
-            numidx = self.num_indices;
+            let buf = &self.vertex_buffer;
+            let idxbuf = &self.index_buffer;
+            let numidx = self.num_indices;
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
@@ -400,14 +390,13 @@ impl State {
                 false,
             )
             .unwrap();
-        pixmap.set_resolution(pixmap.resolution().0 *10, pixmap.resolution().1 *10);
+        pixmap.set_resolution(pixmap.resolution().0 * 10, pixmap.resolution().1 * 10);
         let pixels: &[u8] = bytemuck::cast_slice(pixmap.pixels().unwrap());
-        let mut new_pixels: Vec<u8> = pixels.iter().map(|&i| i as u8).collect();
 
         let new_texture = texture::Texture::from_bytes(
             &self.device,
             &self.queue,
-            &*new_pixels.into_boxed_slice(),
+            pixels,
             pixmap.width(),
             pixmap.height(),
             "newpage",
@@ -484,7 +473,10 @@ pub async fn run() {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
         .with_title(format!("{}", prettyname))
-        .with_inner_size(winit::dpi::PhysicalSize::new(pixmap.width(), pixmap.height()))
+        .with_inner_size(winit::dpi::PhysicalSize::new(
+            pixmap.width(),
+            pixmap.height(),
+        ))
         .build(&event_loop)
         .unwrap();
 
@@ -532,21 +524,11 @@ pub async fn run() {
                 _ => {}
             },
             Event::MainEventsCleared => {
-                // Application update code.
-
-                // Queue a RedrawRequested event.
-                //
-                // You only need to call this if you've determined that you need to redraw, in
-                // applications which do not always need to. Applications that redraw continuously
-                // can just render here instead.
                 state.window.request_redraw();
             }
             Event::RedrawRequested(window_id) if window_id == state.window().id() => {
                 // Redraw the application.
-                //
-                // It's preferable for applications that do not render continuously to render in
-                // this event rather than in MainEventsCleared, since rendering in here allows
-                // the program to gracefully handle redraws requested by the OS.
+
                 state.update();
                 match state.render() {
                     Ok(_) => {}
